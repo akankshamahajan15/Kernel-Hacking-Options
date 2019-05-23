@@ -1,0 +1,1082 @@
+----------------------------------------------------------
+CSE-506 Homework Assignment #3
+Group 14
+Akanksha Mahajan, 112074564
+Astitv Nagpal, 112008011
+Priyanka Sangtani, 112026558
+----------------------------------------------------------
+
+*** Overview ***
+
+As part of this assignment, we have demonstrated 10 of the useful Kernel Debugging modules present in the Kernel Hacking config option. These options catch specific
+runtime errors/warnings in the code thereby helping us identify the issues and prevent the corruption of the system.
+
+The Debugging modules demonstrated by us are:
+1. Reference Count Leak (CONFIG_DEBUG_KMEMLEAK)
+2. Out of bound access and free after use (CONFIG_KASAN)
+3. Linked List Corruption (CONFIG_BUG_ON_DATA_CORRUPTION)
+4. Deadlock (CONFIG_DEBUG_MUTEXES and CONFIG_DETECT_HUNG_TASK)
+5. Spinlock (CONFIG_DEBUG_ATOMIC_SLEEP)
+6. Softlock (CONFIG_SOFTLOCKUP_DETECTOR)
+7. RCU (CONFIG_RCU_CPU_STALL_TIMEOUT = 30)
+8. Notifier (CONFIG_DEBUG_NOTIFIER)
+9. Scatterlist (CONFIG_DEBUG_SG)
+10. Stackoverflow (CONFIG_DEBUG_STACKOVERFLOW)
+
+*** Files Present ***
+
+1. call_user:  		User-level code that invokes the various sys call modules based on the command-line input passed. Int value is passed as argument that decides 
+			which system call number to trigger.
+
+2. sys_call*.c:   	sys_call1.c - sys_call10.c.
+
+3. install_module*.sh:  Script for each of the 10 sys call modules to remove and insert the module.
+
+4. kernel.config1 and:  These configs contain various Debug options. We have seperated those that interfere with each other. All that is mentioned below with
+   kernel.config2	each module description.
+
+6. kernel.configBase:   Base Kernel config without any special debugging options.
+
+7. Makefile:  		'make' all the system modules and user program and generate executables.
+
+=> HUNG TASK REMOVED and SOFT LOCKUP REMOVED for RCU but needed in deadlock
+_______________________________________________________________________________________________________________________________________________________________
+
+1. Module1 :    Reference Count leak
+		CONFIG_HAVE_DEBUG_KMEMLEAK=y
+		CONFIG_DEBUG_KMEMLEAK=y
+		CONFIG_DEBUG_KMEMLEAK_EARLY_LOG_SIZE=4000 [By default 400 is set but that doesn't log the leaks because of size limit]
+
+		Steps to run:
+			echo clear > /sys/kernel/debug/kmemleak
+			echo scan > /sys/kernel/debug/kmemleak
+			cat /sys/kernel/debug/kmemleak
+
+We are allocating kernel memory to but are not freeing it on exit. KMEMLEAK when is run, detects all the objects are not freed on scanning and reports
+them in /sys/kernel/debug/kemleak.
+
+	        With Option:
+			unreferenced object 0xffff888115c31d00 (size 16):
+			comm "call_user", pid 9708, jiffies 4296090130 (age 2004.231s)
+			hex dump (first 16 bytes):
+			e0 1c c3 15 81 88 ff ff 80 6e 69 0e 81 88 ff ff  .........ni.....
+			backtrace:
+			[<00000000b7b42078>] do_syscall_64+0x185/0xd10
+			[<00000000577204f9>] entry_SYSCALL_64_after_hwframe+0x49/0xbe
+			[<00000000cc2f8f50>] 0xffffffffffffffff
+
+_______________________________________________________________________________________________________________________________________________________________
+
+2. Module2 :    Out of bound access and free after use
+	        
+		CONFIG_KASAN=y
+		CONFIG_KASAN_EXTRA=y
+		CONFIG_KASAN_INLINE=y
+
+		Steps to run :
+			Upgraded gcc version to 5.4.0 as KASAN doesn't work with lower version gcc versions
+
+KASAN adds its check after in memory blocks which makes it little slow but it is useful as it detects if we are accessing
+any out of bound memory or we are accessing memory after free. It prevents the system from getting corrupted by catching those
+bugs.
+
+	        With Option:
+
+[ 2842.073491] BUG: KASAN: slab-out-of-bounds in call2+0x8e/0x90 [sys_call2]
+[ 2842.073828] Read of size 4 at addr ffff8881158a1b10 by task call_user/9426
+
+[ 2842.074280] CPU: 0 PID: 9426 Comm: call_user Tainted: G        W  OE     4.20.6+ #13
+[ 2842.074287] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 2842.074294] Call Trace:
+[ 2842.074331]  dump_stack+0x73/0xbb
+[ 2842.074373]  print_address_description+0x66/0x280
+[ 2842.074385]  kasan_report+0x28e/0x390
+[ 2842.074397]  ? call2+0x8e/0x90 [sys_call2]
+[ 2842.074407]  call2+0x8e/0x90 [sys_call2]
+[ 2842.074419]  do_syscall_64+0x185/0xd10
+[ 2842.074428]  ? syscall_return_slowpath+0x3f0/0x3f0
+[ 2842.074441]  ? trace_hardirqs_off_caller+0x5b/0x150
+[ 2842.074449]  ? trace_hardirqs_off_thunk+0x1a/0x1c
+[ 2842.074463]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[ 2842.074473] RIP: 0033:0x7fb7825001c9
+[ 2842.074485] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[ 2842.074492] RSP: 002b:00007ffd4587a4d8 EFLAGS: 00000206 ORIG_RAX: 0000000000000150
+[ 2842.074504] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007fb7825001c9
+[ 2842.074511] RDX: 0000000000000000 RSI: 0000000000000001 RDI: 00007ffd4587a4f8
+[ 2842.074517] RBP: 00007ffd4587a500 R08: 0000000000000000 R09: 00007ffd4587a5e8
+[ 2842.074524] R10: 00007fb7827cfe80 R11: 0000000000000206 R12: 00000000004005a0
+[ 2842.074531] R13: 00007ffd4587a5e0 R14: 0000000000000000 R15: 0000000000000000
+
+[ 2842.074658] Allocated by task 9426:
+[ 2842.074858]  kmem_cache_alloc_trace+0xad/0x2f0
+[ 2842.074868]  call2+0x35/0x90 [sys_call2]
+[ 2842.074876]  do_syscall_64+0x185/0xd10
+[ 2842.074887]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+
+[ 2842.075008] Freed by task 0:
+[ 2842.075178] (stack is not available)
+
+[ 2842.075492] The buggy address belongs to the object at ffff8881158a1ae0
+ which belongs to the cache kmalloc-64 of size 64
+[ 2842.076062] The buggy address is located 48 bytes inside of
+ 64-byte region [ffff8881158a1ae0, ffff8881158a1b20)
+[ 2842.076584] The buggy address belongs to the page:
+[ 2842.076835] page:ffffea0004562840 count:1 mapcount:0 mapping:ffff88811a803600 index:0x0
+[ 2842.077217] flags: 0x8000000000000200(slab)
+[ 2842.077445] raw: 8000000000000200 dead000000000100 dead000000000200 ffff88811a803600
+[ 2842.077919] raw: 0000000000000000 00000000802a002a 00000001ffffffff 0000000000000000
+[ 2842.078390] page dumped because: kasan: bad access detected
+
+[ 2842.078821] Memory state around the buggy address:
+[ 2842.079084]  ffff8881158a1a00: fc fc fc fc fb fb fb fb fb fb fb fb fc fc fc fc
+[ 2842.079456]  ffff8881158a1a80: 00 00 00 00 00 00 00 fc fc fc fc fc 00 00 00 00
+[ 2842.079826] >ffff8881158a1b00: 00 fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+[ 2842.080197]                          ^
+[ 2842.080415]  ffff8881158a1b80: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+[ 2842.080786]  ffff8881158a1c00: fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc fc
+[ 2842.081155] ==================================================================
+[ 2842.081523] Disabling lock debugging due to kernel taint
+_______________________________________________________________________________________________________________________________________________________________
+
+3. Module3 :    Linked List Corruption
+	        CONFIG_BUG_ON_DATA_CORRUPTION
+
+This option checks if doubly linked list are corrupted or not. It errors out if next and prev links of linked list nodes
+are wrong. We change the prev link of a node and then perform normal addition of a node in the linked list. It errors out.
+
+bool __list_add_valid(struct list_head *new, struct list_head *prev,
+		struct list_head *next)
+{
+	if (CHECK_DATA_CORRUPTION(next->prev != prev,
+				"list_add corruption. next->prev should be prev (%px), but was %px. (next=%px).\n",
+				prev, next->prev, next) ||
+			CHECK_DATA_CORRUPTION(prev->next != next,
+				"list_add corruption. prev->next should be next (%px), but was %px. (prev=%px).\n",
+				next, prev->next, prev) ||
+			CHECK_DATA_CORRUPTION(new == prev || new == next,
+				"list_add double add: new=%px, prev=%px, next=%px.\n",
+				new, prev, next))
+		return false;
+
+	return true;
+}	
+
+	        Without Option:
+
+	       installed new sys_call3 module
+[  747.524804] removed sys_call3 module
+[  747.531154] BUG: unable to handle kernel paging request at ffff925600000014
+[  747.531318] PGD 38202067 P4D 38202067 PUD 0 
+[  747.531422] Oops: 0000 [#1] SMP PTI
+[  747.531511] CPU: 1 PID: 5470 Comm: insmod Tainted: G           OE     4.20.6BASE+ #5
+[  747.531672] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[  747.531889] RIP: 0010:__kmalloc_track_caller+0x8c/0x1e0
+[  747.532010] Code: c9 74 7c 49 8b 09 65 48 8b 51 08 65 48 03 0d 13 dc 48 71 4c 8b 31 4d 85 f6 0f 84 ff 00 00 00 41 8b 41 20 48 8d 4a 01 4d 8b 01 <49> 8b 1c 06 4c 89 f0 65 49 0f c7 08 0f 94 c0 84 c0 74 c6 41 8b 41
+[  747.532362] RSP: 0018:ffffa0028012bb70 EFLAGS: 00010286
+[  747.532481] RAX: 0000000000000000 RBX: 00000000006000c0 RCX: 00000000000008e2
+[  747.532631] RDX: 00000000000008e1 RSI: 00000000006000c0 RDI: ffff92567b003c80
+[  747.532781] RBP: 00000000006000c0 R08: 0000000000023760 R09: ffff92567b003c80
+[  747.532931] R10: 0000000000000220 R11: 0000000000000040 R12: 0000000000000006
+[  747.533081] R13: ffffffff8ebf696b R14: ffff925600000014 R15: ffff92567b003c80
+[  747.533267] FS:  00007f6e5d497740(0000) GS:ffff92567bb00000(0000) knlGS:0000000000000000
+[  747.533443] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  747.533614] CR2: ffff925600000014 CR3: 000000013b144001 CR4: 00000000000606e0
+[  747.533817] Call Trace:
+[  747.533935]  kstrdup+0x28/0x50
+[  747.534025]  __kernfs_new_node+0x3b/0x1a0
+[  747.534129]  ? __kernfs_new_node+0xa2/0x1a0
+[  747.534274]  kernfs_new_node+0x1c/0x40
+[  747.534373]  __kernfs_create_file+0x20/0x90
+[  747.534479]  sysfs_add_file_mode_ns+0xa0/0x180
+[  747.534590]  internal_create_group+0x12d/0x390
+[  747.534701]  load_module+0x203f/0x2270
+[  747.534800]  ? __symbol_get+0x90/0x90
+[  747.534898]  ? kernel_read_file+0x184/0x1d0
+[  747.535005]  ? security_capable+0x3a/0x50
+[  747.535108]  __se_sys_finit_module+0xb3/0xc0
+[  747.535216]  do_syscall_64+0x7b/0x37d
+[  747.535314]  ? do_page_fault+0x37/0x12e
+[  747.535416]  entry_SYSCALL_64_after_hwframe+0x44/0xa9
+[  747.535536] RIP: 0033:0x7f6e5c95b1c9
+[  747.535631] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[  747.535996] RSP: 002b:00007ffe66003198 EFLAGS: 00000202 ORIG_RAX: 0000000000000139
+[  747.536165] RAX: ffffffffffffffda RBX: 000000000237c1f0 RCX: 00007f6e5c95b1c9
+[  747.536319] RDX: 0000000000000000 RSI: 000000000041a94e RDI: 0000000000000003
+[  747.536474] RBP: 000000000041a94e R08: 0000000000000000 R09: 00007ffe66003338
+[  747.536629] R10: 0000000000000003 R11: 0000000000000202 R12: 0000000000000000
+[  747.536784] R13: 000000000237b130 R14: 0000000000000000 R15: 0000000000000000
+[  747.536939] Modules linked in: sys_call3(OE+) sg sr_mod cdrom sd_mod crc32c_intel floppy ata_generic mptspi pata_acpi scsi_transport_spi mptscsih mptbase ata_piix libata autofs4 [last unloaded: sys_call3]
+[  747.537323] CR2: ffff925600000014
+[  747.537415] ---[ end trace f2a3e6b95e693eb5 ]---
+[  747.537531] RIP: 0010:__kmalloc_track_caller+0x8c/0x1e0
+[  747.537654] Code: c9 74 7c 49 8b 09 65 48 8b 51 08 65 48 03 0d 13 dc 48 71 4c 8b 31 4d 85 f6 0f 84 ff 00 00 00 41 8b 41 20 48 8d 4a 01 4d 8b 01 <49> 8b 1c 06 4c 89 f0 65 49 0f c7 08 0f 94 c0 84 c0 74 c6 41 8b 41
+[  747.538020] RSP: 0018:ffffa0028012bb70 EFLAGS: 00010286
+[  747.538144] RAX: 0000000000000000 RBX: 00000000006000c0 RCX: 00000000000008e2
+[  747.538299] RDX: 00000000000008e1 RSI: 00000000006000c0 RDI: ffff92567b003c80
+[  747.538454] RBP: 00000000006000c0 R08: 0000000000023760 R09: ffff92567b003c80
+[  747.538610] R10: 0000000000000220 R11: 0000000000000040 R12: 0000000000000006
+[  747.538765] R13: ffffffff8ebf696b R14: ffff925600000014 R15: ffff92567b003c80
+[  747.538942] FS:  00007f6e5d497740(0000) GS:ffff92567bb00000(0000) knlGS:0000000000000000
+[  747.539131] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  747.539264] CR2: ffff925600000014 CR3: 000000013b144001 CR4: 00000000000606e0
+
+	===================================================================================================================================
+
+	        With Option:
+
+[ 2967.816480] installed new sys_call3 module
+[ 2979.690105] list_add corruption. next->prev should be prev (ffff8880b082fdf8), but was 0000000000000000. (next=ffff888114567ae0).
+[ 2979.690683] ------------[ cut here ]------------
+[ 2979.690690] kernel BUG at lib/list_debug.c:25!
+[ 2979.690908] invalid opcode: 0000 [#1] SMP KASAN PTI
+[ 2979.691130] CPU: 0 PID: 9448 Comm: call_user Tainted: G    B   W  OE     4.20.6+ #13
+[ 2979.691457] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 2979.691975] RIP: 0010:__list_add_valid+0x74/0xd0
+[ 2979.692193] Code: 48 39 c3 75 27 48 39 ea 74 39 48 39 eb 74 34 48 83 c4 08 b8 01 00 00 00 5b 5d c3 48 89 d9 48 c7 c7 40 3e 39 a9 e8 b0 4a 81 ff <0f> 0b 48 89 d1 48 89 de 48 89 c2 48 c7 c7 00 3f 39 a9 e8 99 4a 81
+[ 2979.692888] RSP: 0018:ffff8880b082fdb8 EFLAGS: 00010282
+[ 2979.693119] RAX: 0000000000000075 RBX: ffff888114567ae0 RCX: 0000000000000000
+[ 2979.693408] RDX: 0000000000000000 RSI: 0000000000000008 RDI: ffffed1016105fad
+[ 2979.693697] RBP: ffff888114567ac8 R08: ffffed1023686d90 R09: ffffed1023686d90
+[ 2979.693986] R10: 0000000000000001 R11: ffffed1023686d8f R12: 1ffff11016105fbb
+[ 2979.694275] R13: ffff8880b082fdf8 R14: ffff888114567ae0 R15: 0000000000000000
+[ 2979.694606] FS:  00007efc8083b740(0000) GS:ffff88811b400000(0000) knlGS:0000000000000000
+[ 2979.694967] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 2979.695230] CR2: 00007efc80620290 CR3: 0000000110992006 CR4: 00000000000606f0
+[ 2979.695557] Call Trace:
+[ 2979.695733]  call3+0x1d4/0x309 [sys_call3]
+[ 2979.695932]  ? 0xffffffffc0400000
+[ 2979.696103]  do_syscall_64+0x185/0xd10
+[ 2979.696287]  ? syscall_return_slowpath+0x3f0/0x3f0
+[ 2979.696508]  ? trace_hardirqs_off_caller+0x5b/0x150
+[ 2979.696727]  ? trace_hardirqs_off_thunk+0x1a/0x1c
+[ 2979.696970]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[ 2979.697200] RIP: 0033:0x7efc803501c9
+[ 2979.697381] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[ 2979.698090] RSP: 002b:00007fff6d8a9328 EFLAGS: 00000206 ORIG_RAX: 0000000000000151
+[ 2979.698408] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007efc803501c9
+[ 2979.698697] RDX: 0000000000000000 RSI: 0000000000000001 RDI: 00007fff6d8a9348
+[ 2979.699005] RBP: 00007fff6d8a9350 R08: 0000000000000000 R09: 00007fff6d8a9438
+[ 2979.699295] R10: 00007efc8061fe80 R11: 0000000000000206 R12: 00000000004005a0
+[ 2979.699584] R13: 00007fff6d8a9430 R14: 0000000000000000 R15: 0000000000000000
+[ 2979.699874] Modules linked in: sys_call3(OE) sys_call2(OE) sys_call1(OE) sys_call8(OE) sys_call8_1(OE) sg sr_mod cdrom sd_mod crc32c_intel ata_generic pata_acpi mptspi ata_piix scsi_transport_spi libata mptscsih mptbase floppy autofs4 [last unloaded: sys_call1]
+[ 2979.700817] ---[ end trace 57b5198389f8c09d ]---
+[ 2979.701036] RIP: 0010:__list_add_valid+0x74/0xd0
+[ 2979.701246] Code: 48 39 c3 75 27 48 39 ea 74 39 48 39 eb 74 34 48 83 c4 08 b8 01 00 00 00 5b 5d c3 48 89 d9 48 c7 c7 40 3e 39 a9 e8 b0 4a 81 ff <0f> 0b 48 89 d1 48 89 de 48 89 c2 48 c7 c7 00 3f 39 a9 e8 99 4a 81
+[ 2979.701993] RSP: 0018:ffff8880b082fdb8 EFLAGS: 00010282
+[ 2979.702225] RAX: 0000000000000075 RBX: ffff888114567ae0 RCX: 0000000000000000
+[ 2979.702541] RDX: 0000000000000000 RSI: 0000000000000008 RDI: ffffed1016105fad
+[ 2979.702842] RBP: ffff888114567ac8 R08: ffffed1023686d90 R09: ffffed1023686d90
+[ 2979.703131] R10: 0000000000000001 R11: ffffed1023686d8f R12: 1ffff11016105fbb
+[ 2979.703449] R13: ffff8880b082fdf8 R14: ffff888114567ae0 R15: 0000000000000000
+[ 2979.703764] FS:  00007efc8083b740(0000) GS:ffff88811b400000(0000) knlGS:0000000000000000
+[ 2979.704113] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 2979.704412] CR2: 00007efc80620290 CR3: 0000000110992006 CR4: 00000000000606f0
+_______________________________________________________________________________________________________________________________________________________________
+
+4. Module4 :    DeadLock
+
+		CONFIG_DEBUG_MUTEXES
+		CONFIG_DETECT_HUNG_TASK=120  [By default 120 seconds is set]
+
+CONFIG_DEBUG_MUTEXES checks if there is any scenario that will cause deadlock in the code. We are spawning two threads and each tries to
+hold those locks but in opposite order to create deadlock condition.
+ CONFIG_DEBUG_MUTEXES catches this scenario and warns the user regarding circular lock dependency.
+
+If two threads get stuck in deadlock in this scenario then CONFIG_DETECT_HUNG_TASK detects if any process is in hung state for more than 2 minutes and
+it errors out.
+	        
+		Without Option:
+
+root         2     0  0 18:07 ?        00:00:00 [kthreadd]
+root      4740     2  0 18:12 ?        00:00:00 [thread1]
+root      4741     2  0 18:12 ?        00:00:00 [thread2]
+root      4751  4134  0 18:12 pts/0    00:00:00 grep --color=auto thread
+
+	====================================================================================================================================
+	        
+		With Option :
+
+First warns you about the circular lock dependency
+
+[ 1187.374467] installed new sys_call4 module
+[ 1191.369471] ======================================================
+[ 1191.369692] WARNING: possible circular locking dependency detected
+[ 1191.369898] 4.20.6+ #14 Tainted: G        W  OE
+[ 1191.370073] ------------------------------------------------------
+[ 1191.370280] thread2/8150 is trying to acquire lock:
+[ 1191.370451] 00000000778c28cc (lock1){+.+.}, at: thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.370760]
+but task is already holding lock:
+[ 1191.371045] 0000000050ff2c01 (lock2){+.+.}, at: thread_fn2+0xf/0x70 [sys_call4]
+[ 1191.371305]
+which lock already depends on the new lock.
+
+[ 1191.371594]
+the existing dependency chain (in reverse order) is:
+[ 1191.371851]
+-> #1 (lock2){+.+.}:
+[ 1191.372036]        thread_fn1+0x27/0x70 [sys_call4]
+[ 1191.372267]        kthread+0xfe/0x130
+[ 1191.372443]        ret_from_fork+0x24/0x30
+[ 1191.372602]
+-> #0 (lock1){+.+.}:
+[ 1191.372786]        __mutex_lock+0x86/0x980
+[ 1191.372946]        thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.373126]        kthread+0xfe/0x130
+[ 1191.373274]        ret_from_fork+0x24/0x30
+[ 1191.373432]
+other info that might help us debug this:
+
+[ 1191.373705]  Possible unsafe locking scenario:
+
+[ 1191.373917]        CPU0                    CPU1
+[ 1191.374088]        ----                    ----
+[ 1191.374259]   lock(lock2);
+[ 1191.374380]                                lock(lock1);
+[ 1191.374575]                                lock(lock2);
+[ 1191.374763]   lock(lock1);
+[ 1191.374884]
+ *** DEADLOCK ***
+
+[ 1191.375102] 1 lock held by thread2/8150:
+[ 1191.375255]  #0: 0000000050ff2c01 (lock2){+.+.}, at: thread_fn2+0xf/0x70 [sys_call4]
+[ 1191.375525]
+stack backtrace:
+[ 1191.375697] CPU: 0 PID: 8150 Comm: thread2 Tainted: G        W  OE     4.20.6+ #14
+[ 1191.375959] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1191.376304] Call Trace:
+[ 1191.376432]  dump_stack+0x5e/0x8b
+[ 1191.376616]  print_circular_bug.isra.16+0x1cc/0x2b0
+[ 1191.376799]  __lock_acquire+0x14c2/0x1ae0
+[ 1191.376958]  ? lock_acquire+0xb9/0x1b0
+[ 1191.377109]  lock_acquire+0xb9/0x1b0
+[ 1191.377256]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.377428]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.377601]  __mutex_lock+0x86/0x980
+[ 1191.377748]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.377920]  ? schedule_timeout+0x1fe/0x4d0
+[ 1191.378083]  ? lock_acquire+0xb9/0x1b0
+[ 1191.378234]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.378417]  ? run_timer_softirq+0x150/0x150
+[ 1191.378585]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.378757]  thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.378926]  kthread+0xfe/0x130
+[ 1191.379061]  ? thread_fn1+0x70/0x70 [sys_call4]
+[ 1191.379234]  ? kthread_park+0x80/0x80
+
+Then if the threads get stuck in deadlock then hung option catches it
+
+stack backtrace:
+[ 1191.375697] CPU: 0 PID: 8150 Comm: thread2 Tainted: G        W  OE     4.20.6+ #14
+[ 1191.375959] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1191.376304] Call Trace:
+[ 1191.376432]  dump_stack+0x5e/0x8b
+[ 1191.376616]  print_circular_bug.isra.16+0x1cc/0x2b0
+[ 1191.376799]  __lock_acquire+0x14c2/0x1ae0
+[ 1191.376958]  ? lock_acquire+0xb9/0x1b0
+[ 1191.377109]  lock_acquire+0xb9/0x1b0
+[ 1191.377256]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.377428]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.377601]  __mutex_lock+0x86/0x980
+[ 1191.377748]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.377920]  ? schedule_timeout+0x1fe/0x4d0
+[ 1191.378083]  ? lock_acquire+0xb9/0x1b0
+[ 1191.378234]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.378417]  ? run_timer_softirq+0x150/0x150
+[ 1191.378585]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.378757]  thread_fn2+0x27/0x70 [sys_call4]
+[ 1191.378926]  kthread+0xfe/0x130
+[ 1191.379061]  ? thread_fn1+0x70/0x70 [sys_call4]
+[ 1191.379234]  ? kthread_park+0x80/0x80
+[ 1191.379384]  ret_from_fork+0x24/0x30
+[ 1353.778447] INFO: task thread1:8149 blocked for more than 120 seconds.
+[ 1353.779059]       Tainted: G        W  OE     4.20.6+ #14
+[ 1353.779698] "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+[ 1353.780086] thread1         D15048  8149      2 0x80000000
+[ 1353.780379] Call Trace:
+[ 1353.780566]  ? __schedule+0x3ea/0xb00
+[ 1353.780737]  schedule+0x34/0x80
+[ 1353.780885]  schedule_preempt_disabled+0xc/0x20
+[ 1353.781073]  __mutex_lock+0x2ab/0x980
+[ 1353.781242]  ? lock_acquire+0xb9/0x1b0
+[ 1353.781441]  ? thread_fn1+0x27/0x70 [sys_call4]
+[ 1353.781685]  ? thread_fn1+0x27/0x70 [sys_call4]
+[ 1353.781873]  thread_fn1+0x27/0x70 [sys_call4]
+[ 1353.782060]  kthread+0xfe/0x130
+[ 1353.782215]  ? 0xffffffffc02bf000
+[ 1353.782396]  ? kthread_park+0x80/0x80
+[ 1353.782560]  ret_from_fork+0x24/0x30
+[ 1353.782731] INFO: task thread2:8150 blocked for more than 120 seconds.
+[ 1353.782978]       Tainted: G        W  OE     4.20.6+ #14
+[ 1353.783189] "echo 0 > /proc/sys/kernel/hung_task_timeout_secs" disables this message.
+[ 1353.783507] thread2         D14152  8150      2 0x80000000
+[ 1353.783729] Call Trace:
+[ 1353.783857]  ? __schedule+0x3ea/0xb00
+[ 1353.784020]  schedule+0x34/0x80
+[ 1353.784166]  schedule_preempt_disabled+0xc/0x20
+[ 1353.784375]  __mutex_lock+0x2ab/0x980
+[ 1353.784538]  ? lock_acquire+0xb9/0x1b0
+[ 1353.784701]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1353.784889]  ? thread_fn2+0x27/0x70 [sys_call4]
+[ 1353.785075]  thread_fn2+0x27/0x70 [sys_call4]
+[ 1353.785278]  kthread+0xfe/0x130
+[ 1353.785424]  ? thread_fn1+0x70/0x70 [sys_call4]
+[ 1353.785651]  ? kthread_park+0x80/0x80
+[ 1353.785813]  ret_from_fork+0x24/0x30
+_______________________________________________________________________________________________________________________________________________________________
+
+5. Module5 :    ATOMIC SLEEP
+	        CONFIG_DEBUG_ATOMIC_SLEEP
+
+CONFIG_DEBUG_ATOMIC_SLEEP is used in a scenario when various routines which may sleep will become very noisy if they are called inside atomic sections: when a spinlock is held, inside an rcu read side critical section, inside preempt disabled sections, inside an interrupt, etc...
+In our case the spinlock is held inside atomic sections and CONFIG_DEBUG_ATOMIC_SLEEP catches and warns the user.
+
+	        Without Option:
+
+root         2     0  0 18:07 ?        00:00:00 [kthreadd]
+root      4727     2 99 18:12 ?        00:00:12 [thread1]
+root      4740  4132  0 18:12 pts/0    00:00:00 grep --color=auto thread
+
+	===================================================================================================================================
+
+	        With Option:
+
+[ 3741.914987] installed new sys_call5 module
+[ 3748.209844] BUG: scheduling while atomic: thread1/14648/0x00000002
+[ 3748.210411] 1 lock held by thread1/14648:
+[ 3748.210415]  #0: 00000000aa469c71 (my_lock){+.+.}, at: thread_fn1+0x14/0x50 [sys_call5]
+[ 3748.210429] Modules linked in: sys_call5(OE) sg sr_mod cdrom sd_mod crc32c_intel ata_generic pata_acpi ata_piix libata mptspi scsi_transport_spi mptscsih mptbase floppy autofs4
+[ 3748.210503] CPU: 1 PID: 14648 Comm: thread1 Tainted: G        W  OE     4.20.6+ #6
+[ 3748.210507] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 3748.210510] Call Trace:
+[ 3748.210520]  dump_stack+0x5e/0x8b
+[ 3748.210527]  __schedule_bug+0x6d/0x7b
+[ 3748.210531]  __schedule+0x9fd/0xb10
+[ 3748.210536]  ? thread_fn1+0x14/0x50 [sys_call5]
+[ 3748.210539]  schedule+0x34/0x80
+[ 3748.210543]  thread_fn1+0x2c/0x50 [sys_call5]
+[ 3748.210549]  kthread+0xfe/0x130
+[ 3748.210552]  ? 0xffffffffc03fc000
+[ 3748.210556]  ? kthread_park+0x80/0x80
+[ 3748.210562]  ret_from_fork+0x24/0x30
+
+_______________________________________________________________________________________________________________________________________________________________
+
+6. Module6 :    SOFTLOCK
+		CONFIG_SOFTLOCKUP_DETECTOR	
+
+		With Option:
+
+[  224.684914] installed new sys_call6 module
+[  260.311841] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [softlockup_thre:4529]
+[  260.312096] Modules linked in: sys_call6(OE) sg sr_mod sd_mod cdrom crc32c_intel floppy ata_generic pata_acpi mptspi scsi_transport_spi mptscsih mptbase ata_piix libata autofs4
+[  260.312144] CPU: 0 PID: 4529 Comm: softlockup_thre Tainted: G           OE     4.20.6BASE+ #6
+[  260.312145] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[  260.312154] RIP: 0010:task+0x1c/0x20 [sys_call6]
+[  260.312162] Code: Bad RIP value.
+[  260.312165] RSP: 0018:ffffa344c038ff10 EFLAGS: 00000202 ORIG_RAX: ffffffffffffff13
+[  260.312168] RAX: 0000000000000000 RBX: ffff8f41f662bf00 RCX: 0000000000000000
+[  260.312169] RDX: 0000000000000001 RSI: 0000000000000246 RDI: ffffffffc0216350
+[  260.312171] RBP: ffff8f41f758e100 R08: 0000000000000000 R09: 0000000000000000
+[  260.312173] R10: 0000000000000001 R11: 0000000000000000 R12: ffffa344c0387e08
+[  260.312174] R13: ffff8f41f7160c80 R14: 0000000000000001 R15: ffff8f41f662bf38
+[  260.312216] FS:  0000000000000000(0000) GS:ffff8f41fba00000(0000) knlGS:0000000000000000
+[  260.312231] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  260.312233] CR2: ffffffffc0213ff2 CR3: 0000000104e0a003 CR4: 00000000000606f0
+[  260.312280] Call Trace:
+[  260.312291]  kthread+0xf3/0x130
+[  260.312295]  ? 0xffffffffc0214000
+[  260.312299]  ? kthread_park+0x80/0x80
+[  260.312306]  ret_from_fork+0x35/0x40
+
+_______________________________________________________________________________________________________________________________________________________________
+
+7. Module7 :    RCU
+	        CONFIG_RCU_CPU_STALL_TIMEOUT=30  [changed to 30s to display it faster, by default it was set to 60s]
+
+If a given RCU grace period extends more than the specified number of seconds [30 secs in our case], a CPU stall warning is printed. If the RCU grace period persists
+additional CPU stall warnings are printed at more widely spaced intervals.
+We are spwaning 2 threads, one is the reader and other is the updater. synchronize_run() in update state wait for older readers to complete. If wait time is gretaer
+than grace time then cpu stall warnings is printed on screen
+
+	        Without Option:
+
+root         2     0  0 18:07 ?        00:00:00 [kthreadd]
+root      5166     2 99 18:15 ?        00:00:10 [thread1]
+root      5167     2 49 18:15 ?        00:00:04 [thread2]
+root      5175  4132  0 18:16 pts/0    00:00:00 grep --color=auto thread
+
+	====================================================================================================================================
+
+	        With Option:
+
+[ 3278.832871] installed new sys_call7 module
+[ 3282.985776] thread1
+[ 3282.989701] Thread2
+[ 3318.040858] rcu: INFO: rcu_sched self-detected stall on CPU
+[ 3318.041101] rcu:     1-....: (34793 ticks this GP) idle=c26/1/0x4000000000000002 softirq=220495/220495 fqs=8451
+[ 3318.041417] rcu:      (t=35001 jiffies g=321217 q=7034)
+[ 3318.041573] NMI backtrace for cpu 1
+[ 3318.041693] CPU: 1 PID: 9472 Comm: thread1 Tainted: G    B D W  OE     4.20.6+ #13
+[ 3318.041932] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 3318.042225] Call Trace:
+[ 3318.042331]  <IRQ>
+[ 3318.042426]  dump_stack+0x73/0xbb
+[ 3318.042543]  nmi_cpu_backtrace+0xcb/0xf0
+[ 3318.042675]  ? lapic_can_unplug_cpu+0x90/0x90
+[ 3318.042813]  nmi_trigger_cpumask_backtrace+0xf5/0x140
+[ 3318.042970]  rcu_dump_cpu_stacks+0x15e/0x1a3
+[ 3318.043107]  rcu_check_callbacks+0x117a/0x1610
+[ 3318.043249]  ? __raise_softirq_irqoff+0xf0/0x150
+[ 3318.043394]  ? tick_sched_handle.isra.5+0x160/0x160
+[ 3318.043544]  update_process_times+0x23/0x50
+[ 3318.043680]  tick_sched_handle.isra.5+0xc7/0x160
+[ 3318.043824]  tick_sched_timer+0x36/0xf0
+[ 3318.043952]  __hrtimer_run_queues+0x2c2/0x970
+[ 3318.044092]  ? hrtimer_interrupt+0xf0/0x780
+[ 3318.044225]  ? enqueue_hrtimer+0x2e0/0x2e0
+[ 3318.044358]  ? ktime_get_update_offsets_now+0xd9/0x2a0
+[ 3318.044513]  hrtimer_interrupt+0x2c5/0x780
+[ 3318.044647]  smp_apic_timer_interrupt+0x10b/0x4d0
+[ 3318.044794]  apic_timer_interrupt+0xf/0x20
+[ 3318.044932]  </IRQ>
+[ 3318.045025] RIP: 0010:thread_fn1+0x9d/0x230 [sys_call7]
+[ 3318.045184] Code: 0f 84 3a 01 00 00 48 c1 eb 03 48 b8 00 00 00 00 00 fc ff df 48 01 c3 80 3b 00 0f 85 7d 01 00 00 48 8b 05 66 0f 40 e9 48 39 e8 <78> eb 48 8b 1d 5a 28 00 00 e8 d5 14 87 e7 85 c0 74 0d 80 3d 1b 24
+[ 3318.045659] RSP: 0018:ffff888109eb7ef8 EFLAGS: 00000287 ORIG_RAX: ffffffffffffff13
+[ 3318.045880] RAX: 00000001002e064f RBX: fffffbfff5301200 RCX: 0000000000000002
+[ 3318.046081] RDX: ffffffffc0408028 RSI: 0000000000000000 RDI: ffffffffa9b61214
+[ 3318.046281] RBP: 00000001002e19a0 R08: 0000000000000000 R09: 0000000000000000
+[ 3318.046481] R10: ffff888109eb7e78 R11: ffffffffc0408028 R12: ffff88811170fc08
+[ 3318.046681] R13: 0000000000000000 R14: ffffffffc0408000 R15: ffff8880b3470000
+[ 3318.046883]  ? 0xffffffffc0408000
+[ 3318.046998]  ? thread_fn1+0x28/0x230 [sys_call7]
+[ 3318.047141]  ? thread_fn1+0x28/0x230 [sys_call7]
+[ 3318.047286]  ? thread_fn1+0x28/0x230 [sys_call7]
+[ 3318.047431]  kthread+0x2a7/0x390
+[ 3318.047544]  ? kthread_park+0x120/0x120
+[ 3318.047673]  ret_from_fork+0x24/0x30
+[ 3320.520907] BUG: workqueue lockup - pool cpus=1 node=0 flags=0x0 nice=0 stuck for 37s!
+[ 3320.521294] Showing busy workqueues and worker pools:
+[ 3320.521522] workqueue events: flags=0x0
+[ 3320.521708]   pwq 2: cpus=1 node=0 flags=0x0 nice=0 active=1/256
+[ 3320.521979]     pending: vmstat_shepherd
+[ 3320.522257] workqueue mpt_poll_0: flags=0x8
+[ 3320.522459]   pwq 2: cpus=1 node=0 flags=0x0 nice=0 active=1/256
+[ 3320.522721]     pending: mpt_fault_reset_work [mptbase]
+[ 3322.984903] thread fn1  100, 200
+
+_______________________________________________________________________________________________________________________________________________________________
+
+8. Module8 :    Notifier
+	        CONFIG_DEBUG_NOTIFIER
+
+		Steps to run:
+			sh install_modules8_1.sh   [sys_call8_1 sends notification to all callback functions on its execution]
+			sh install_module8.sh      [sys_call8 registers its call back function to syscall8_1 and then register on rmmod]
+			./call_user 8
+
+#ifdef CONFIG_DEBUG_NOTIFIERS
+			if (unlikely(!func_ptr_is_kernel_text(nb->notifier_call))) {
+				WARN(1, "Invalid notifier called!");
+				nb = next_nb;
+				continue;
+			}
+#endif
+
+This option turn on sanity checking for notifier call chains. This is most useful for kernel developers to make sure that modules properly unregister themselves from notifier chains. We are defining our own notification chain and one kernel module register itself to other. When other module sends notification to first one
+it checks if callback function is valid or not. It gives warning and skips if callback function is invalid.
+
+	        Without Option
+
+[ 1545.152514] installed new sys_call8_1 module
+[ 1550.035823] installed new sys_call8 module
+[ 1581.333286] kernel tried to execute NX-protected page - exploit attempt? (uid: 0)
+[ 1581.333874] BUG: unable to handle kernel paging request at ffffffffc03f5018
+[ 1581.334370] PGD 9860c067 P4D 9860c067 PUD 9860e067 PMD 13721d067 PTE 8000000139713063
+[ 1581.334734] Oops: 0011 [#1] SMP PTI
+[ 1581.334871] CPU: 0 PID: 5154 Comm: call_user Tainted: G           OE     4.20.6BASE+ #5
+[ 1581.335134] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1581.335463] RIP: 0010:val+0x0/0xffffffffffffefe8 [sys_call8]
+[ 1581.335655] Code: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 18 50 3f c0 ff ff ff ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 <08> 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[ 1581.336190] RSP: 0018:ffffa7210016bea8 EFLAGS: 00010286
+[ 1581.336369] RAX: ffffffffc03f5018 RBX: 00000000ffffffff RCX: 00000000ffffffff
+[ 1581.336596] RDX: 0000000000000000 RSI: 000000000000000a RDI: ffffffffc03f5000
+[ 1581.336824] RBP: 0000000000000000 R08: 0000000000000000 R09: 0000000000000000
+[ 1581.337103] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 1581.337369] R13: 000000000000000a R14: 0000000000000000 R15: 0000000000000000
+[ 1581.337661] FS:  00007f06feea2740(0000) GS:ffff9570fba00000(0000) knlGS:0000000000000000
+[ 1581.337948] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1581.338151] CR2: ffffffffc03f5018 CR3: 0000000137e40006 CR4: 00000000000606f0
+[ 1581.338435] Call Trace:
+[ 1581.338559]  ? notifier_call_chain+0x42/0x70
+[ 1581.338725]  ? call8_1+0x13/0x16 [sys_call8_1]
+[ 1581.338890]  ? do_syscall_64+0x7b/0x37d
+[ 1581.339046]  ? do_page_fault+0x37/0x12e
+[ 1581.339200]  ? entry_SYSCALL_64_after_hwframe+0x44/0xa9
+[ 1581.339395] Modules linked in: sys_call8(OE) sys_call8_1(OE) sg sd_mod sr_mod cdrom crc32c_intel ata_generic pata_acpi floppy ata_piix mptspi scsi_transport_spi libata mptscsih mptbase autofs4
+[ 1581.339928] CR2: ffffffffc03f5018
+[ 1581.340067] ---[ end trace 881b18d2c3a56018 ]---
+[ 1581.340240] RIP: 0010:val+0x0/0xffffffffffffefe8 [sys_call8]
+[ 1581.340439] Code: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 18 50 3f c0 ff ff ff ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 <08> 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+[ 1581.341025] RSP: 0018:ffffa7210016bea8 EFLAGS: 00010286
+[ 1581.341215] RAX: ffffffffc03f5018 RBX: 00000000ffffffff RCX: 00000000ffffffff
+[ 1581.341455] RDX: 0000000000000000 RSI: 000000000000000a RDI: ffffffffc03f5000
+[ 1581.341694] RBP: 0000000000000000 R08: 0000000000000000 R09: 0000000000000000
+[ 1581.341931] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 1581.342170] R13: 000000000000000a R14: 0000000000000000 R15: 0000000000000000
+[ 1581.342419] FS:  00007f06feea2740(0000) GS:ffff9570fba00000(0000) knlGS:0000000000000000
+[ 1581.342781] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1581.343036] CR2: ffffffffc03f5018 CR3: 0000000137e40006 CR4: 00000000000606f0
+
+	===================================================================================================================================
+
+	        With Option:
+
+[ 1570.789941] installed new sys_call8 module
+[ 1575.530179] ------------[ cut here ]------------
+[ 1575.530199] Invalid notifier called!
+[ 1575.530303] WARNING: CPU: 1 PID: 8302 at kernel/notifier.c:88 notifier_call_chain+0x101/0x150
+[ 1575.530311] Modules linked in: sys_call8(OE) sys_call8_1(OE) sg sr_mod cdrom sd_mod crc32c_intel ata_generic pata_acpi mptspi ata_piix scsi_transport_spi libata mptscsih mptbase floppy autofs4
+[ 1575.530372] CPU: 1 PID: 8302 Comm: call_user Tainted: G        W  OE     4.20.6+ #13
+[ 1575.530381] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1575.530393] RIP: 0010:notifier_call_chain+0x101/0x150
+[ 1575.530404] Code: 4d 8b 77 08 48 c1 e8 03 80 3c 18 00 75 56 49 8b 3f e8 83 72 ff ff 85 c0 0f 85 71 ff ff ff 48 c7 c7 00 4c 25 a9 e8 1f e7 f9 ff <0f> 0b eb b2 48 83 c4 20 44 89 e8 5b 5d 41 5c 41 5d 41 5e 41 5f c3
+[ 1575.530411] RSP: 0018:ffff888111a17dd8 EFLAGS: 00010282
+[ 1575.530429] RAX: 0000000000000000 RBX: dffffc0000000000 RCX: ffffffffa7d6ff24
+[ 1575.530436] RDX: 0000000000000000 RSI: ffff88811aa8af08 RDI: ffff88811aa8af04
+[ 1575.530443] RBP: 00000000ffffffff R08: fffffbfff536ae8a R09: 0000000000000000
+[ 1575.530450] R10: 0000000000000001 R11: 0000000000000000 R12: 0000000000000000
+[ 1575.530462] R13: 0000000000000000 R14: 0000000000000000 R15: ffffffffc0352000
+[ 1575.530521] FS:  00007f7edb832740(0000) GS:ffff88811b500000(0000) knlGS:0000000000000000
+[ 1575.530546] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1575.530572] CR2: 00007f7edb617290 CR3: 0000000114af0005 CR4: 00000000000606e0
+[ 1575.530616] Call Trace:
+[ 1575.530637]  __atomic_notifier_call_chain+0x5f/0xf0
+[ 1575.530653]  call8_1+0x13/0x16 [sys_call8_1]
+[ 1575.530677]  do_syscall_64+0x185/0xd10
+[ 1575.530688]  ? syscall_return_slowpath+0x3f0/0x3f0
+[ 1575.530722]  ? trace_hardirqs_off_caller+0x5b/0x150
+[ 1575.530732]  ? trace_hardirqs_off_thunk+0x1a/0x1c
+[ 1575.530775]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[ 1575.530785] RIP: 0033:0x7f7edb3471c9
+[ 1575.530794] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[ 1575.530802] RSP: 002b:00007ffe90f8c638 EFLAGS: 00000202 ORIG_RAX: 000000000000015a
+[ 1575.530812] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007f7edb3471c9
+[ 1575.530818] RDX: 0000000000000000 RSI: 0000000000000001 RDI: 00007ffe90f8c658
+[ 1575.530825] RBP: 00007ffe90f8c660 R08: 0000000000000000 R09: 00007ffe90f8c748
+[ 1575.530832] R10: 00007f7edb616e80 R11: 0000000000000202 R12: 00000000004005a0
+[ 1575.530838] R13: 00007ffe90f8c740 R14: 0000000000000000 R15: 0000000000000000
+[ 1575.530855] irq event stamp: 4410
+[ 1575.530879] hardirqs last  enabled at (4409): [<ffffffffa7c4a5fb>] vprintk_emit+0x14b/0x3f0
+[ 1575.530889] hardirqs last disabled at (4410): [<ffffffffa7a0358f>] trace_hardirqs_off_thunk+0x1a/0x1c
+[ 1575.530900] softirqs last  enabled at (4108): [<ffffffffa9000679>] __do_softirq+0x679/0x858
+[ 1575.530923] softirqs last disabled at (4101): [<ffffffffa7b2ae65>] irq_exit+0x265/0x2a0
+[ 1575.530931] ---[ end trace 57b5198389f8c09c ]---
+
+_______________________________________________________________________________________________________________________________________________________________
+
+9. Module9 :    Scatterlist
+
+		CONFIG_DEBUG_SG
+
+                Also need to enable AES cipher:
+                        CONFIG_CRYPTO_AES, CONFIG_CRYPTO_AES_X86_64, CONFIG_CRYPTO_AES_NI_INTEL
+                depending upon the architecture.
+
+Scatter lists gather the memory that is physically scattered across the memory but virtually contiguous. When communicating with the DMA it provides an abstracted view 
+of memory to the DMA as if this memory is physically contiguous.
+The 'sg_init_one' function internally calls 'sg_set_buf' for mapping the virtual address of the buffer to a page. For this to be successful, the buffer must have a
+valid virtual address. When the 'CONFIG_DEBUG_SG' option is enabled, the 'sg_set_buf' function checks that the buffer has a valid virtual address, if not, it generates
+a BUG_ON().
+
+/* Kernel code snippet that defines the option */
+void sg_init_one(struct scatterlist *sg, const void *buf, unsigned int buflen)
+{
+	sg_init_table(sg, 1);
+	sg_set_buf(sg, buf, buflen);
+}
+static inline void sg_set_buf(struct scatterlist *sg, const void *buf,
+			      unsigned int buflen)
+{
+#ifdef CONFIG_DEBUG_SG
+	BUG_ON(!virt_addr_valid(buf));
+#endif
+	sg_set_page(sg, virt_to_page(buf), buflen, offset_in_page(buf));
+}
+
+In order to demonstrate this bug, we allocated the buffer using vmalloc. We have used the code written in HW1 for performing encryption using the skcipher library.
+
+	        Without Option
+
+[  249.260362] installed new sys_call9 module
+[  260.328138] Allocation of skcipher handler failed.
+[  260.328162] BUG: unable to handle kernel NULL pointer dereference at 0000000000000056
+[  260.328472] PGD 8000000139495067 P4D 8000000139495067 PUD 139a70067 PMD 0 
+[  260.328694] Oops: 0000 [#1] SMP PTI
+[  260.328835] CPU: 0 PID: 5154 Comm: call_user Tainted: G           OE     4.20.6BASE+ #5
+[  260.329082] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[  260.329403] RIP: 0010:crypto_destroy_tfm+0xe/0x80
+[  260.329565] Code: 31 ff ff ff 0f 0b 48 89 df e8 0e fb ff ff eb cd 66 90 66 2e 0f 1f 84 00 00 00 00 00 55 48 89 fd 53 48 83 ec 08 48 85 ff 74 61 <48> 83 7e 30 00 48 8b 5e 38 48 89 d8 74 31 48 83 b8 38 01 00 00 00
+[  260.330086] RSP: 0018:ffffbaf600c2be10 EFLAGS: 00010282
+[  260.330261] RAX: ffff9a1af9a22601 RBX: 0000000000000000 RCX: 0000000000005fc1
+[  260.330569] RDX: 0000000000005fc0 RSI: 0000000000000026 RDI: fffffffffffffffe
+[  260.330841] RBP: fffffffffffffffe R08: 00000000000237c0 R09: ffffffffc016810a
+[  260.331129] R10: ffff9a1afba237c0 R11: ffffe085c4e68880 R12: ffffbaf60007d000
+[  260.331362] R13: 0000000000000000 R14: 00000000fffffffe R15: ffffbaf600c2bebf
+[  260.331612] FS:  00007fab2a0ad740(0000) GS:ffff9a1afba00000(0000) knlGS:0000000000000000
+[  260.331893] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  260.332091] CR2: 0000000000000056 CR3: 0000000139ffa002 CR4: 00000000000606f0
+[  260.332397] Call Trace:
+[  260.332525]  skcipher_driver+0x11b/0x1e0 [sys_call9]
+[  260.332710]  ? memzero_explicit+0xe/0x10
+[  260.332868]  ? _get_random_bytes+0xa6/0x120
+[  260.333031]  call9+0x70/0xac [sys_call9]
+[  260.333186]  do_syscall_64+0x7b/0x37d
+[  260.333338]  ? do_page_fault+0x37/0x12e
+[  260.333492]  entry_SYSCALL_64_after_hwframe+0x44/0xa9
+[  260.333672] RIP: 0033:0x7fab29bc21c9
+[  260.333814] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[  260.334363] RSP: 002b:00007ffebfad0748 EFLAGS: 00000206 ORIG_RAX: 0000000000000157
+[  260.334733] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007fab29bc21c9
+[  260.335116] RDX: 0000000000000000 RSI: 0000000000000001 RDI: 00007ffebfad0768
+[  260.335440] RBP: 00007ffebfad0770 R08: 0000000000000001 R09: 00007ffebfad0858
+[  260.335672] R10: 000000000000ffff R11: 0000000000000206 R12: 00000000004005a0
+[  260.335906] R13: 00007ffebfad0850 R14: 0000000000000000 R15: 0000000000000000
+[  260.336138] Modules linked in: sys_call9(OE) sg sr_mod cdrom sd_mod crc32c_intel ata_generic pata_acpi floppy ata_piix libata mptspi scsi_transport_spi mptscsih mptbase autofs4
+[  260.336626] CR2: 0000000000000056
+[  260.336812] ---[ end trace ede023ac3db58ce5 ]---
+[  260.336985] RIP: 0010:crypto_destroy_tfm+0xe/0x80
+[  260.337155] Code: 31 ff ff ff 0f 0b 48 89 df e8 0e fb ff ff eb cd 66 90 66 2e 0f 1f 84 00 00 00 00 00 55 48 89 fd 53 48 83 ec 08 48 85 ff 74 61 <48> 83 7e 30 00 48 8b 5e 38 48 89 d8 74 31 48 83 b8 38 01 00 00 00
+[  260.337701] RSP: 0018:ffffbaf600c2be10 EFLAGS: 00010282
+[  260.337901] RAX: ffff9a1af9a22601 RBX: 0000000000000000 RCX: 0000000000005fc1
+[  260.338133] RDX: 0000000000005fc0 RSI: 0000000000000026 RDI: fffffffffffffffe
+[  260.338364] RBP: fffffffffffffffe R08: 00000000000237c0 R09: ffffffffc016810a
+[  260.338594] R10: ffff9a1afba237c0 R11: ffffe085c4e68880 R12: ffffbaf60007d000
+[  260.338839] R13: 0000000000000000 R14: 00000000fffffffe R15: ffffbaf600c2bebf
+[  260.339101] FS:  00007fab2a0ad740(0000) GS:ffff9a1afba00000(0000) knlGS:0000000000000000
+[  260.339381] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  260.339579] CR2: 0000000000000056 CR3: 0000000139ffa002 CR4: 00000000000606f0
+
+	===================================================================================================================================
+
+	        With Option
+
+[  201.100760] installed new sys_call9 module
+[  206.449210] ------------[ cut here ]------------
+[  206.449218] kernel BUG at ./include/linux/scatterlist.h:143!
+[  206.449628] invalid opcode: 0000 [#1] SMP PTI
+[  206.449801] CPU: 1 PID: 4707 Comm: call_user Tainted: G        W  OE     4.20.6+ #9
+[  206.450075] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[  206.450432] RIP: 0010:sg_init_one+0x88/0x90
+[  206.450594] Code: e2 01 75 2a 48 09 c6 41 89 5c 24 0c 41 89 4c 24 08 5b 49 89 34 24 5d 41 5c c3 48 c7 c0 00 00 00 80 48 2b 05 aa e5 ab 00 eb b3 <0f> 0b 0f 0b 0f 0b 66 90 81 ff 80 00 00 00 74 0b 89 ff 48 c1 e7 05
+[  206.451190] RSP: 0018:ffff9f66002fbdd8 EFLAGS: 00010246
+[  206.451384] RAX: 0000000000000000 RBX: 0000000000000028 RCX: 000000000000002a
+[  206.451629] RDX: 000009ef4007d000 RSI: 0000000000000002 RDI: ffff9f668007d000
+[  206.451874] RBP: ffff9f660007d000 R08: ffff9f66002fbebf R09: 0000000000000000
+[  206.452120] R10: ffff9f66002fbe00 R11: 0000000000000001 R12: ffff9f66002fbe00
+[  206.452363] R13: ffff9577f6ea1628 R14: ffff9577f60cc090 R15: ffff9577f14d56c0
+[  206.452632] FS:  00007f9757b76740(0000) GS:ffff9577fbb00000(0000) knlGS:0000000000000000
+[  206.452918] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  206.454836] CR2: 00007f975768b1b0 CR3: 00000001367be002 CR4: 00000000000606e0
+[  206.455153] Call Trace:
+[  206.455333]  skcipher_driver+0xc5/0x210 [sys_call9]
+[  206.455556]  ? memzero_explicit+0xe/0x10
+[  206.455774]  ? get_random_bytes+0x11f/0x240
+[  206.455947]  call9+0x70/0xaa [sys_call9]
+[  206.456114]  do_syscall_64+0x7a/0x460
+[  206.456271]  ? trace_hardirqs_off_thunk+0x1a/0x1c
+[  206.456460]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[  206.456656] RIP: 0033:0x7f975768b1c9
+[  206.456809] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[  206.457429] RSP: 002b:00007ffd16e99fd8 EFLAGS: 00000206 ORIG_RAX: 0000000000000157
+[  206.457716] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007f975768b1c9
+[  206.457970] RDX: 0000000000000000 RSI: 0000000000000001 RDI: 00007ffd16e99ff8
+[  206.458224] RBP: 00007ffd16e9a000 R08: 0000000000000000 R09: 00007ffd16e9a0e8
+[  206.458477] R10: 00007f975795ae80 R11: 0000000000000206 R12: 00000000004005a0
+[  206.458730] R13: 00007ffd16e9a0e0 R14: 0000000000000000 R15: 0000000000000000
+[  206.458984] Modules linked in: sys_call9(OE) sg sd_mod sr_mod cdrom ata_generic pata_acpi crc32c_intel ata_piix mptspi libata scsi_transport_spi mptscsih mptbase floppy autofs4
+[  206.459573] ---[ end trace 764e87728a3e51ac ]---
+[  206.459762] RIP: 0010:sg_init_one+0x88/0x90
+[  206.459932] Code: e2 01 75 2a 48 09 c6 41 89 5c 24 0c 41 89 4c 24 08 5b 49 89 34 24 5d 41 5c c3 48 c7 c0 00 00 00 80 48 2b 05 aa e5 ab 00 eb b3 <0f> 0b 0f 0b 0f 0b 66 90 81 ff 80 00 00 00 74 0b 89 ff 48 c1 e7 05
+[  206.460574] RSP: 0018:ffff9f66002fbdd8 EFLAGS: 00010246
+[  206.460777] RAX: 0000000000000000 RBX: 0000000000000028 RCX: 000000000000002a
+[  206.461029] RDX: 000009ef4007d000 RSI: 0000000000000002 RDI: ffff9f668007d000
+[  206.461302] RBP: ffff9f660007d000 R08: ffff9f66002fbebf R09: 0000000000000000
+[  206.461557] R10: ffff9f66002fbe00 R11: 0000000000000001 R12: ffff9f66002fbe00
+[  206.461810] R13: ffff9577f6ea1628 R14: ffff9577f60cc090 R15: ffff9577f14d56c0
+[  206.462104] FS:  00007f9757b76740(0000) GS:ffff9577fbb00000(0000) knlGS:0000000000000000
+[  206.462410] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  206.462625] CR2: 00007f975768b1b0 CR3: 00000001367be002 CR4: 00000000000606e0
+
+_______________________________________________________________________________________________________________________________________________________________
+
+10. Module10 :	StackOverflow
+		CONFIG_DEBUG_STACKOVERFLOW
+
+The Kernel stack is 8KB in size. The option checks if the program tries to allocate memory on the stack that may cause an overfow and catches this during runtime.
+We have demonstrated this by statically allocating a buffer of PAGE_SIZE to read the contents of a file equal to PAGE_SIZE at a time.
+
+		Without Option:
+
+[ 3171.272076] CPU: 1 PID: 5268 Comm: call_user Tainted: G           OE     4.20.6BASE+ #5
+[ 3171.272461] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 3171.272785] RIP: 0010:call10+0x29/0x9e [sys_call10]
+[ 3171.272969] Code: Bad RIP value.
+[ 3171.273092] RSP: 0018:ffff9ba7c07afec0 EFLAGS: 00010246
+[ 3171.273265] RAX: 0000000000000000 RBX: ffff9ba7c07b3f58 RCX: 0000000000000000
+[ 3171.273482] RDX: 0000000000000000 RSI: 0000000000000000 RDI: ffffffffc01b8024
+[ 3171.273700] RBP: 0000000000000158 R08: 0000000000000000 R09: 0000000000000000
+[ 3171.273917] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 3171.274133] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 3171.274399] FS:  00007fcb80537740(0000) GS:ffff89657bb00000(0000) knlGS:0000000000000000
+[ 3171.274659] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 3171.274894] CR2: ffffffffc01b6fff CR3: 0000000136f0c003 CR4: 00000000000606e0
+[ 3171.275192] Call Trace:
+[ 3171.275485]  ? get_page_from_freelist+0x226/0xd20
+[ 3171.275658]  ? get_page_from_freelist+0x226/0xd20
+[ 3171.275827]  ? __alloc_pages_nodemask+0x124/0xf70
+[ 3171.275996]  ? __alloc_pages_nodemask+0x124/0xf70
+[ 3171.276164]  ? __alloc_pages_nodemask+0x124/0xf70
+[ 3171.276374]  ? xas_load+0x9/0x80
+[ 3171.276511]  ? find_get_entry+0x58/0x170
+[ 3171.276661]  ? pagecache_get_page+0x21/0x230
+[ 3171.276846]  ? mem_cgroup_commit_charge+0x4f/0xe0
+[ 3171.277023]  ? page_add_new_anon_rmap+0x3e/0x80
+[ 3171.277189]  ? _cond_resched+0x10/0x20
+[ 3171.277344]  ? unmap_page_range+0x7be/0x8d0
+[ 3171.277501]  ? __handle_mm_fault+0xa0d/0xbe0
+[ 3171.277660]  ? get_page_from_freelist+0x226/0xd20
+[ 3171.277828]  ? get_page_from_freelist+0x226/0xd20
+[ 3171.278015]  ? flush_tlb_func_common.isra.7+0xf7/0x230
+[ 3171.278203]  ? cpumask_any_but+0x27/0x40
+[ 3171.278353]  ? page_remove_rmap+0xce/0x1e0
+[ 3171.278508]  ? unmap_page_range+0x7be/0x8d0
+[ 3171.278664]  ? flush_tlb_func_common.isra.7+0xf7/0x230
+[ 3171.278843]  ? __alloc_pages_nodemask+0x124/0xf70
+[ 3171.279011]  ? release_pages+0x256/0x360
+[ 3171.279161]  ? page_add_file_rmap+0xa/0x140
+[ 3171.279318]  ? alloc_set_pte+0xcd/0x2a0
+[ 3171.279482]  ? filemap_map_pages+0x83/0x360
+[ 3171.279645]  ? __handle_mm_fault+0x461/0xbe0
+[ 3171.279807]  ? handle_mm_fault+0x116/0x1e0
+[ 3171.279984]  do_syscall_64+0x7b/0x37d
+[ 3171.280158]  ? do_page_fault+0x37/0x12e
+[ 3171.280331]  entry_SYSCALL_64_after_hwframe+0x44/0xa9
+[ 3171.280532] RIP: 0033:0x7fcb8004c1c9
+[ 3171.280674] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[ 3171.281209] RSP: 002b:00007ffc7399d618 EFLAGS: 00000206 ORIG_RAX: 0000000000000158
+[ 3171.281522] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007fcb8004c1c9
+[ 3171.281856] RDX: 0000000000000000 RSI: 0000000000000002 RDI: 00007ffc7399d638
+[ 3171.282297] RBP: 00007ffc7399d640 R08: 0000000000000000 R09: 00007ffc7399d728
+[ 3171.282722] R10: 00007fcb8031be80 R11: 0000000000000206 R12: 00000000004005a0
+[ 3171.283103] R13: 00007ffc7399d720 R14: 0000000000000000 R15: 0000000000000000
+[ 3171.283330] Modules linked in: sys_call10(OE) sys_call2(OE) sg sd_mod sr_mod cdrom crc32c_intel mptspi scsi_transport_spi mptscsih mptbase ata_generic pata_acpi ata_piix floppy libata autofs4 [last unloaded: sys_call2]
+[ 3171.283904] ---[ end trace a88af289fe4c47dc ]---
+[ 3171.284075] RIP: 0010:call10+0x29/0x9e [sys_call10]
+[ 3171.284307] Code: Bad RIP value.
+[ 3171.284439] RSP: 0018:ffff9ba7c07afec0 EFLAGS: 00010246
+[ 3171.284619] RAX: 0000000000000000 RBX: ffff9ba7c07b3f58 RCX: 0000000000000000
+[ 3171.284850] RDX: 0000000000000000 RSI: 0000000000000000 RDI: ffffffffc01b8024
+[ 3171.285078] RBP: 0000000000000158 R08: 0000000000000000 R09: 0000000000000000
+[ 3171.285305] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 3171.285537] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 3171.285791] FS:  00007fcb80537740(0000) GS:ffff89657bb00000(0000) knlGS:0000000000000000
+[ 3171.286069] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 3171.286265] CR2: ffffffffc01b6fff CR3: 0000000136f0c003 CR4: 00000000000606e0
+[ 3171.297632] WARNING: CPU: 1 PID: 0 at kernel/rcu/tree.c:574 rcu_eqs_enter.isra.45+0x8f/0xa0
+[ 3171.297907] Modules linked in: sys_call10(OE) sys_call2(OE) sg sd_mod sr_mod cdrom crc32c_intel mptspi scsi_transport_spi mptscsih mptbase ata_generic pata_acpi ata_piix floppy libata autofs4 [last unloaded: sys_call2]
+[ 3171.298469] CPU: 1 PID: 0 Comm: swapper/1 Tainted: G      D    OE     4.20.6BASE+ #5
+[ 3171.298721] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 3171.299045] RIP: 0010:rcu_eqs_enter.isra.45+0x8f/0xa0
+[ 3171.299221] Code: a8 00 00 00 00 00 00 00 65 48 03 1d 43 38 55 62 b8 02 00 00 00 f0 0f c1 83 b8 00 00 00 5b 5d c3 48 89 ef e8 e3 e0 ff ff eb d3 <0f> 0b eb 94 0f 1f 00 66 2e 0f 1f 84 00 00 00 00 00 53 48 8b 1d e8
+[ 3171.299750] RSP: 0018:ffff9ba7c0073ec0 EFLAGS: 00010002
+[ 3171.299933] RAX: ffff89657bb21140 RBX: 0000000000021140 RCX: 0000000000000000
+[ 3171.300210] RDX: 4000000000000000 RSI: 0000000000000000 RDI: 000002e2600e80bf
+[ 3171.300444] RBP: 0000000000000001 R08: 0000000000000000 R09: 0000000000000000
+[ 3171.300669] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 3171.300894] R13: 0000000000000000 R14: ffff89657b100c80 R15: ffff89657b100c80
+[ 3171.301166] FS:  0000000000000000(0000) GS:ffff89657bb00000(0000) knlGS:0000000000000000
+[ 3171.301459] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 3171.301652] CR2: 00007f44a79a9000 CR3: 00000001369da005 CR4: 00000000000606e0
+[ 3171.301925] Call Trace:
+[ 3171.302173]  do_idle+0x17f/0x250
+[ 3171.302361]  cpu_startup_entry+0x14/0x20
+[ 3171.302522]  start_secondary+0x186/0x1b0
+[ 3171.302693]  secondary_startup_64+0xa4/0xb0
+[ 3171.302850] ---[ end trace a88af289fe4c47dd ]---
+
+	===================================================================================================================================
+
+		With Option:
+
+[ 1613.780283] installed new sys_call10 module
+[ 1618.177739] BUG: stack guard page was hit at 000000001504e2a9 (stack is 00000000136c76a2..0000000083eb1ca7)
+[ 1618.178287] kernel stack overflow (double-fault): 0000 [#1] SMP PTI
+[ 1618.178513] CPU: 0 PID: 5476 Comm: call_user Tainted: G        W  OE     4.20.6+ #10
+[ 1618.178777] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1618.179131] RIP: 0010:call10+0x29/0xa7 [sys_call10]
+[ 1618.179354] Code: Bad RIP value.
+[ 1618.179490] RSP: 0018:ffff99ac80cc3ec0 EFLAGS: 00010246
+[ 1618.179683] RAX: 0000000000000000 RBX: 0000000000000158 RCX: 0000000000000001
+[ 1618.179928] RDX: 0000000000000000 RSI: 0000000000000000 RDI: ffffffffc0149024
+[ 1618.180173] RBP: ffff99ac80cc7f58 R08: 0000000000000000 R09: 0000000000000000
+[ 1618.180416] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 1618.180659] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1618.180946] FS:  00007efd2bf0a740(0000) GS:ffff96df7b800000(0000) knlGS:0000000000000000
+[ 1618.181234] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1618.181439] CR2: ffffffffc0147fff CR3: 0000000136c6a002 CR4: 00000000000606f0
+[ 1618.181743] Call Trace:
+[ 1618.181940]  ? mark_held_locks+0x71/0xa0
+[ 1618.182154]  ? get_page_from_freelist+0x22d/0x1420
+[ 1618.182367]  ? get_page_from_freelist+0x8f3/0x1420
+[ 1618.182602]  ? __lock_acquire+0x54e/0x1ae0
+[ 1618.182780]  ? __lock_acquire+0x54e/0x1ae0
+[ 1618.182949]  ? __lock_acquire+0x54e/0x1ae0
+[ 1618.183117]  ? __lock_acquire+0x54e/0x1ae0
+[ 1618.183285]  ? __lock_acquire+0x54e/0x1ae0
+[ 1618.183453]  ? __lock_acquire+0x54e/0x1ae0
+[ 1618.183622]  ? alloc_set_pte+0x268/0x300
+[ 1618.183785]  ? reacquire_held_locks+0xcd/0x1c0
+[ 1618.183962]  ? reacquire_held_locks+0xcd/0x1c0
+[ 1618.184140]  ? alloc_set_pte+0x268/0x300
+[ 1618.184305]  ? filemap_map_pages+0x272/0x5c0
+[ 1618.184479]  ? filemap_map_pages+0x291/0x5c0
+[ 1618.184652]  ? __handle_mm_fault+0x537/0xd30
+[ 1618.184847]  ? _raw_spin_unlock+0x1f/0x30
+[ 1618.185016]  ? __handle_mm_fault+0x537/0xd30
+[ 1618.185195]  ? __do_page_fault+0x238/0x530
+[ 1618.185368]  ? up_read+0x17/0x90
+[ 1618.185513]  ? __do_page_fault+0x238/0x530
+[ 1618.185686]  do_syscall_64+0x7a/0x480
+[ 1618.185847]  ? trace_hardirqs_off_thunk+0x1a/0x1c
+[ 1618.186035]  entry_SYSCALL_64_after_hwframe+0x49/0xbe
+[ 1618.186232] RIP: 0033:0x7efd2ba1f1c9
+[ 1618.186387] Code: 01 00 48 81 c4 80 00 00 00 e9 f1 fe ff ff 0f 1f 00 48 89 f8 48 89 f7 48 89 d6 48 89 ca 4d 89 c2 4d 89 c8 4c 8b 4c 24 08 0f 05 <48> 3d 01 f0 ff ff 73 01 c3 48 8b 0d 97 dc 2c 00 f7 d8 64 89 01 48
+[ 1618.187000] RSP: 002b:00007ffe0058e8e8 EFLAGS: 00000206 ORIG_RAX: 0000000000000158
+[ 1618.187278] RAX: ffffffffffffffda RBX: 0000000000000000 RCX: 00007efd2ba1f1c9
+[ 1618.187533] RDX: 0000000000000000 RSI: 0000000000000002 RDI: 00007ffe0058e908
+[ 1618.187795] RBP: 00007ffe0058e910 R08: 0000000000000003 R09: 00007ffe0058e9f8
+[ 1618.188050] R10: 0000000000000000 R11: 0000000000000206 R12: 00000000004005a0
+[ 1618.188305] R13: 00007ffe0058e9f0 R14: 0000000000000000 R15: 0000000000000000
+[ 1618.188561] Modules linked in: sys_call10(OE) sg sr_mod cdrom sd_mod crc32c_intel ata_generic pata_acpi ata_piix libata mptspi scsi_transport_spi mptscsih mptbase floppy autofs4
+[ 1618.189101] ---[ end trace 8eeb3e0c751582fb ]---
+[ 1618.189286] RIP: 0010:call10+0x29/0xa7 [sys_call10]
+[ 1618.189479] Code: Bad RIP value.
+[ 1618.189622] RSP: 0018:ffff99ac80cc3ec0 EFLAGS: 00010246
+[ 1618.189823] RAX: 0000000000000000 RBX: 0000000000000158 RCX: 0000000000000001
+[ 1618.190076] RDX: 0000000000000000 RSI: 0000000000000000 RDI: ffffffffc0149024
+[ 1618.190328] RBP: ffff99ac80cc7f58 R08: 0000000000000000 R09: 0000000000000000
+[ 1618.190581] R10: 0000000000000000 R11: 0000000000000000 R12: 0000000000000000
+[ 1618.190840] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1618.191141] FS:  00007efd2bf0a740(0000) GS:ffff96df7b800000(0000) knlGS:0000000000000000
+[ 1618.191468] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1618.191684] CR2: ffffffffc0147fff CR3: 0000000136c6a002 CR4: 00000000000606f0
+[ 1618.191987] BUG: sleeping function called from invalid context at ./include/linux/percpu-rwsem.h:34
+[ 1618.192309] in_atomic(): 1, irqs_disabled(): 1, pid: 5476, name: call_user
+[ 1618.192556] INFO: lockdep is turned off.
+[ 1618.192726] irq event stamp: 2242
+[ 1618.192875] hardirqs last  enabled at (2241): [<ffffffff96a023c1>] do_syscall_64+0x41/0x480
+[ 1618.193175] hardirqs last disabled at (2242): [<ffffffff96a01a5a>] trace_hardirqs_off_thunk+0x1a/0x1c
+[ 1618.193501] softirqs last  enabled at (1980): [<ffffffff97400390>] __do_softirq+0x390/0x44b
+[ 1618.193801] softirqs last disabled at (1931): [<ffffffff96a9497d>] irq_exit+0xfd/0x110
+[ 1618.194089] CPU: 0 PID: 5476 Comm: call_user Tainted: G      D W  OE     4.20.6+ #10
+[ 1618.194369] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1618.194733] Call Trace:
+[ 1618.194879]  dump_stack+0x5e/0x8b
+[ 1618.195036]  ___might_sleep+0x1f3/0x220
+[ 1618.195207]  exit_signals+0x2b/0x240
+[ 1618.195368]  do_exit+0xaf/0xd10
+[ 1618.195510]  ? do_syscall_64+0x7a/0x480
+[ 1618.195671]  ? trace_hardirqs_off_thunk+0x1a/0x1c
+[ 1618.195859]  rewind_stack_do_exit+0x17/0x17
+[ 1618.196103] note: call_user[5476] exited with preempt_count 1
+[ 1618.216496] WARNING: CPU: 0 PID: 0 at kernel/rcu/tree.c:574 rcu_eqs_enter+0x19c/0x200
+[ 1618.216818] Modules linked in: sys_call10(OE) sg sr_mod cdrom sd_mod crc32c_intel ata_generic pata_acpi ata_piix libata mptspi scsi_transport_spi mptscsih mptbase floppy autofs4
+[ 1618.217379] CPU: 0 PID: 0 Comm: swapper/0 Tainted: G      D W  OE     4.20.6+ #10
+[ 1618.217662] Hardware name: VMware, Inc. VMware Virtual Platform/440BX Desktop Reference Platform, BIOS 6.00 09/21/2015
+[ 1618.218041] RIP: 0010:rcu_eqs_enter+0x19c/0x200
+[ 1618.218228] Code: f0 4c 89 e2 4c 89 ee ff d0 48 8b 03 48 85 c0 75 e3 65 ff 0d c6 92 50 69 e9 f4 fe ff ff 48 89 df e8 19 fd ff ff e9 1c ff ff ff <0f> 0b e9 8e fe ff ff 65 ff 05 a6 92 50 69 48 8b 05 cf 6f fd 00 e8
+[ 1618.218890] RSP: 0018:ffffffff97a03e88 EFLAGS: 00010002
+[ 1618.219096] RAX: 4000000000000000 RBX: ffff96df7b9f26c0 RCX: 0000000000000000
+[ 1618.219357] RDX: 0000000000000002 RSI: 0000000000000000 RDI: 0000000000000000
+[ 1618.219617] RBP: 00000000001f26c0 R08: 0000000000000000 R09: 0000000000000000
+[ 1618.219877] R10: ffffffff97a03de8 R11: 0000000000000000 R12: ffffffff97a197c0
+[ 1618.220137] R13: 0000000000000000 R14: 0000000000000000 R15: ffffffff97a197c0
+[ 1618.220402] FS:  0000000000000000(0000) GS:ffff96df7b800000(0000) knlGS:0000000000000000
+[ 1618.220703] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1618.220923] CR2: 00007f3128a72000 CR3: 00000001393b0003 CR4: 00000000000606f0
+[ 1618.221186] Call Trace:
+[ 1618.221330]  do_idle+0x1a6/0x250
+[ 1618.221487]  cpu_startup_entry+0x14/0x20
+[ 1618.221658]  start_kernel+0x4af/0x4cf
+[ 1618.221860]  secondary_startup_64+0xa4/0xb0
+[ 1618.222038] irq event stamp: 619752
+[ 1618.222196] hardirqs last  enabled at (619751): [<ffffffff96b2e130>] tick_nohz_idle_exit+0x50/0xb0
+[ 1618.222525] hardirqs last disabled at (619752): [<ffffffff9706d2e1>] __schedule+0xe1/0xb00
+[ 1618.222842] softirqs last  enabled at (619746): [<ffffffff97400390>] __do_softirq+0x390/0x44b
+[ 1618.223156] softirqs last disabled at (619735): [<ffffffff96a9497d>] irq_exit+0xfd/0x110
+[ 1618.223454] ---[ end trace 8eeb3e0c751582fc ]---
+_______________________________________________________________________________________________________________________________________________________________
+
+*** Extra Options ***
+Apart from the above demonstrated options, we tried to implement the below options but were not not able to successfully demonstrate the option in dmesg.
+
+1. CONFIG_DEBUG_SCHEDULE
+In order to demonstrate this option, our approach involved trying to set the Scheduler policy to pick high-priority jobs first. Then, we would keep increasing the
+priority of a task and add it to the wait queue so that this task keeps getting CPU time and the remaining tasks remain blocked. However, due to the multi-core setup
+and other scheduler functioning that was beyond our control, we were not able to successfully catch this in dmesg.
+
+2. CONFIG_DEBUG_POISONING
+This option on free posion memory with either a fixed value or 0 and then on allocation it checks if value is same or not as poison. If not then memory is corrupted
+and it errors out. We tried this with kmalloc and krealloc but its highly unlikely that we get the same page again. We also implemented kmem_create_cache and
+kmem_alloc_cache but with that also we got the different pages. With mmap we thought of trying but this check is inside kmme_create_cache:
+
+#if DEBUG
+        /*
+         * If we're going to use the generic kernel_map_pages()
+         * poisoning, then it's going to smash the contents of
+         * the redzone and userword anyhow, so switch them off.
+         */
+        if (IS_ENABLED(CONFIG_PAGE_POISONING) &&
+                (cachep->flags & SLAB_POISON) &&
+                is_debug_pagealloc_cache(cachep))
+                cachep->flags &= ~(SLAB_RED_ZONE | SLAB_STORE_USER);
+#endif
+
+3. CONFIG_DEBUG_SPINLOCK
+This function is to catch missing spinlock initialization and certain other kinds of spinlock errors commonly made. This is best used in conjunction with the 
+NMI watchdog so that spinlock deadlocks are also debuggable. 
+
+This option was interfering with CONFIG_DEBUG_ATOMIC_SLEEP. Hence we decided to go ahead with the ATOMIC SLEEP option. But, if this option is disabled then 
+SPINLOCK is detected by the hacking option.
+
+4. CONFIG_WQ_WATCHDOG
+If worker pool doesn’t make progress on a pending work item for a given amount of time (30s by default), warning message is printed along with a dump of work 
+queue state. 
+
+We were successfully able to write and implement the delayed work queue but the CONFIG_WQ_WATCHDOG did not pick up the delay and print in the trace.
+Though the work was successfully delayed wthout getting into the sleep state, the CONFIG_WQ_WATCHDOG did not catch and print it.
+
+*** References ***
+1. https://www.kernel.org/doc/html/v4.15/crypto/api-samples.html
+2. https://www.kernel.org/doc/Documentation/RCU/stallwarn.txt
+3. https://lwn.net/Articles/301910/
+4. http://www.rdrop.com/~paulmck/RCU/whatisRCU.html
+5. https://www.kernel.org/doc/Documentation/RCU/Design/Requirements/Requirements.html
+6. https://stackoverflow.com/questions/3086864/how-to-create-a-new-linux-kernel-scheduler
+7. https://tampub.uta.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf
+8. https://web.cs.wpi.edu/~claypool/courses/3013-B01/samples/linux-sched.c
+9. https://www.cs.uic.edu/~jbell/CourseNotes/OperatingSystems/6_CPU_Scheduling.html
+10. https://github.com/fervagar/kernel_modules/blob/master/workQueueDelayed.c
+11. https://stackoverflow.com/questions/7937245/how-to-use-linux-work-queue
+12. https://linux-kernel-labs.github.io/master/labs/deferred_work.html
+13. https://people.freedesktop.org/~narmstrong/meson_drm_doc/core-api/workqueue.html
+14. https://events.static.linuxfound.org/sites/events/files/slides/LinuxCon%20North%20America%202015%20KernelAddressSanitizer.pdf
+15. https://www.collabora.com/news-and-blog/blog/2016/06/10/linux-kernel-memory-corruption-debug-tricks/
+16. https://www.kernel.org/doc/Documentation/locking/spinlocks.txt
+17. https://www.kernel.org/doc/Documentation/locking/lockdep-design.txt
+18. https://lwn.net/Articles/536363/
+19. https://lwn.net/Articles/321663/
+
+
+
